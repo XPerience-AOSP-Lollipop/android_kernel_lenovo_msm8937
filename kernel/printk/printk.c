@@ -52,8 +52,16 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/printk.h>
 
+#ifdef CONFIG_LENOVO_DEBUG_RKM
+#include <asm/le_rkm.h>
+#endif
+
 #include "console_cmdline.h"
 #include "braille.h"
+
+#ifdef CONFIG_EARLY_PRINTK_DIRECT
+extern void printascii(char *);
+#endif
 
 int console_printk[4] = {
 	CONSOLE_LOGLEVEL_DEFAULT,	/* console_loglevel */
@@ -223,7 +231,14 @@ struct printk_log {
 	u8 facility;		/* syslog facility */
 	u8 flags:5;		/* internal record flags */
 	u8 level:3;		/* syslog level */
-};
+#if defined(CONFIG_LOG_BUF_MAGIC)
+	u32 magic;		/* handle for ramdump analysis tools */
+#endif
+}
+#ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+__packed __aligned(4)
+#endif
+;
 
 /*
  * The logbuf_lock protects kmsg buffer, indices, counters.  This can be taken
@@ -261,11 +276,7 @@ static u32 clear_idx;
 #define LOG_LINE_MAX		(1024 - PREFIX_MAX)
 
 /* record buffer */
-#if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS)
-#define LOG_ALIGN 4
-#else
 #define LOG_ALIGN __alignof__(struct printk_log)
-#endif
 #define __LOG_BUF_LEN (1 << CONFIG_LOG_BUF_SHIFT)
 static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN);
 static char *log_buf = __log_buf;
@@ -282,6 +293,12 @@ u32 log_buf_len_get(void)
 {
 	return log_buf_len;
 }
+#if defined(CONFIG_LOG_BUF_MAGIC)
+static u32 __log_align __used = LOG_ALIGN;
+#define LOG_MAGIC(msg) ((msg)->magic = 0x5d7aefca)
+#else
+#define LOG_MAGIC(msg)
+#endif
 
 /* human readable text of the record */
 static char *log_text(const struct printk_log *msg)
@@ -436,6 +453,7 @@ static int log_store(int facility, int level,
 		 * to signify a wrap around.
 		 */
 		memset(log_buf + log_next_idx, 0, sizeof(struct printk_log));
+		LOG_MAGIC((struct printk_log *)(log_buf + log_next_idx));
 		log_next_idx = 0;
 	}
 
@@ -452,6 +470,7 @@ static int log_store(int facility, int level,
 	msg->facility = facility;
 	msg->level = level & 7;
 	msg->flags = flags & 0x1f;
+	LOG_MAGIC(msg);
 	if (ts_nsec > 0)
 		msg->ts_nsec = ts_nsec;
 	else
@@ -898,7 +917,12 @@ void __init setup_log_buf(int early)
 		log_buf_add_cpu();
 
 	if (!new_log_buf_len)
+	{
+#ifdef CONFIG_LENOVO_DEBUG_RKM
+		rkm_init_log_buf_header(__log_buf,log_buf_len,(char*)&log_first_idx,(char*)&log_next_idx,sizeof(struct printk_log));
+#endif
 		return;
+	}
 
 	if (early) {
 		new_log_buf =
@@ -1256,6 +1280,63 @@ static int syslog_print_all(char __user *buf, int size, bool clear)
 	kfree(text);
 	return len;
 }
+
+#ifdef CONFIG_LENOVO_DEBUG_RKM
+int kernel_log_buf_text_parser(char *kernel_log_buf, char *text_buf, int size)
+{
+#if 1
+	char *parser_text_buf;
+	char *buf = text_buf;
+	int total_size = size;
+	struct printk_log *msg;
+	int len = 0;
+	int log_idx = 0;
+	enum log_flags log_prev = LOG_NOCONS;
+
+	if((kernel_log_buf == NULL) || (text_buf == NULL))
+	{
+		return -EINVAL;
+	}
+
+	parser_text_buf = kmalloc(LOG_LINE_MAX + PREFIX_MAX, GFP_KERNEL);
+	if (!parser_text_buf)
+		return -ENOMEM;
+
+	while (size > 0) {
+		size_t n;
+
+		msg = (struct printk_log *)(kernel_log_buf + log_idx);
+		/*
+		 * A length == 0 record is the end of buffer marker. Wrap around and
+		 * read the message at the start of the buffer.
+		 */
+		if (!msg->len)
+			break;
+
+		n = msg_print_text(msg, log_prev, false, parser_text_buf,
+				LOG_LINE_MAX + PREFIX_MAX);
+
+		if ((len+n) >= total_size)
+			break;
+
+		log_prev = msg->flags;
+
+		log_idx = log_idx + msg->len;
+
+		memcpy(buf, parser_text_buf, n);
+
+		len += n;
+		size -= n;
+		buf += n;
+	}
+
+	kfree(parser_text_buf);
+	return len;
+#else
+	return 0;
+#endif
+}
+#endif
 
 int do_syslog(int type, char __user *buf, int len, bool from_file)
 {
@@ -1707,6 +1788,10 @@ asmlinkage int vprintk_emit(int facility, int level,
 		}
 	}
 
+#ifdef CONFIG_EARLY_PRINTK_DIRECT
+	printascii(text);
+#endif
+
 	if (level == -1)
 		level = default_message_loglevel;
 
@@ -2046,6 +2131,14 @@ void resume_console(void)
 	console_unlock();
 }
 
+static void __cpuinit console_flush(struct work_struct *work)
+{
+	console_lock();
+	console_unlock();
+}
+
+static __cpuinitdata DECLARE_WORK(console_cpu_notify_work, console_flush);
+
 /**
  * console_cpu_notify - print deferred console messages after CPU hotplug
  * @self: notifier struct
@@ -2056,17 +2149,29 @@ void resume_console(void)
  * will be spooled but will not show up on the console.  This function is
  * called when a new CPU comes online (or fails to come up), and ensures
  * that any such output gets printed.
+ *
+ * Special handling must be done for cases invoked from an atomic context,
+ * as we can't be taking the console semaphore here.
  */
 static int console_cpu_notify(struct notifier_block *self,
 	unsigned long action, void *hcpu)
 {
 	switch (action) {
-	case CPU_ONLINE:
 	case CPU_DEAD:
 	case CPU_DOWN_FAILED:
 	case CPU_UP_CANCELED:
+#ifdef CONFIG_CONSOLE_FLUSH_ON_HOTPLUG
 		console_lock();
 		console_unlock();
+#endif
+		break;
+	/* invoked with preemption disabled, so defer */
+	case CPU_ONLINE:
+	case CPU_DYING:
+		if (!console_trylock())
+			schedule_work(&console_cpu_notify_work);
+		else
+			console_unlock();
 	}
 	return NOTIFY_OK;
 }
@@ -2167,24 +2272,13 @@ void console_unlock(void)
 	static u64 seen_seq;
 	unsigned long flags;
 	bool wake_klogd = false;
-	bool do_cond_resched, retry;
+	bool retry;
 
 	if (console_suspended) {
 		up_console_sem();
 		return;
 	}
 
-	/*
-	 * Console drivers are called under logbuf_lock, so
-	 * @console_may_schedule should be cleared before; however, we may
-	 * end up dumping a lot of lines, for example, if called from
-	 * console registration path, and should invoke cond_resched()
-	 * between lines if allowable.  Not doing so can cause a very long
-	 * scheduling stall on a slow console leading to RCU stall and
-	 * softlockup warnings which exacerbate the issue with more
-	 * messages practically incapacitating the system.
-	 */
-	do_cond_resched = console_may_schedule;
 	console_may_schedule = 0;
 
 	/* flush buffered message fragment immediately to console */
@@ -2246,9 +2340,6 @@ skip:
 		call_console_drivers(level, text, len);
 		start_critical_timings();
 		local_irq_restore(flags);
-
-		if (do_cond_resched)
-			cond_resched();
 	}
 	console_locked = 0;
 
@@ -2313,25 +2404,6 @@ void console_unblank(void)
 	for_each_console(c)
 		if ((c->flags & CON_ENABLED) && c->unblank)
 			c->unblank();
-	console_unlock();
-}
-
-/**
- * console_flush_on_panic - flush console content on panic
- *
- * Immediately output all pending messages no matter what.
- */
-void console_flush_on_panic(void)
-{
-	/*
-	 * If someone else is holding the console lock, trylock will fail
-	 * and may_schedule may be set.  Ignore and proceed to unlock so
-	 * that messages are flushed out.  As this can be called from any
-	 * context and we don't want to get preempted while flushing,
-	 * ensure may_schedule is cleared.
-	 */
-	console_trylock();
-	console_may_schedule = 0;
 	console_unlock();
 }
 

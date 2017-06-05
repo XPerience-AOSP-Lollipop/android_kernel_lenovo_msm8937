@@ -111,7 +111,6 @@ static ssize_t of_node_property_read(struct file *filp, struct kobject *kobj,
 	return memory_read_from_buffer(buf, count, &offset, pp->value, pp->length);
 }
 
-/* always return newly allocated name, caller must free after use */
 static const char *safe_name(struct kobject *kobj, const char *orig_name)
 {
 	const char *name = orig_name;
@@ -126,12 +125,9 @@ static const char *safe_name(struct kobject *kobj, const char *orig_name)
 		name = kasprintf(GFP_KERNEL, "%s#%i", orig_name, ++i);
 	}
 
-	if (name == orig_name) {
-		name = kstrdup(orig_name, GFP_KERNEL);
-	} else {
+	if (name != orig_name)
 		pr_warn("device-tree: Duplicate name in %s, renamed to \"%s\"\n",
 			kobject_name(kobj), name);
-	}
 	return name;
 }
 
@@ -162,7 +158,6 @@ int __of_add_property_sysfs(struct device_node *np, struct property *pp)
 int __of_attach_node_sysfs(struct device_node *np)
 {
 	const char *name;
-	struct kobject *parent;
 	struct property *pp;
 	int rc;
 
@@ -175,16 +170,15 @@ int __of_attach_node_sysfs(struct device_node *np)
 	np->kobj.kset = of_kset;
 	if (!np->parent) {
 		/* Nodes without parents are new top level trees */
-		name = safe_name(&of_kset->kobj, "base");
-		parent = NULL;
+		rc = kobject_add(&np->kobj, NULL, "%s",
+				 safe_name(&of_kset->kobj, "base"));
 	} else {
 		name = safe_name(&np->parent->kobj, kbasename(np->full_name));
-		parent = &np->parent->kobj;
+		if (!name || !name[0])
+			return -EINVAL;
+
+		rc = kobject_add(&np->kobj, &np->parent->kobj, "%s", name);
 	}
-	if (!name)
-		return -ENOMEM;
-	rc = kobject_add(&np->kobj, parent, "%s", name);
-	kfree(name);
 	if (rc)
 		return rc;
 
@@ -1715,12 +1709,6 @@ int __of_remove_property(struct device_node *np, struct property *prop)
 	return 0;
 }
 
-void __of_sysfs_remove_bin_file(struct device_node *np, struct property *prop)
-{
-	sysfs_remove_bin_file(&np->kobj, &prop->attr);
-	kfree(prop->attr.attr.name);
-}
-
 void __of_remove_property_sysfs(struct device_node *np, struct property *prop)
 {
 	if (!IS_ENABLED(CONFIG_SYSFS))
@@ -1728,7 +1716,7 @@ void __of_remove_property_sysfs(struct device_node *np, struct property *prop)
 
 	/* at early boot, bail here and defer setup to of_init() */
 	if (of_kset && of_node_is_attached(np))
-		__of_sysfs_remove_bin_file(np, prop);
+		sysfs_remove_bin_file(&np->kobj, &prop->attr);
 }
 
 /**
@@ -1798,7 +1786,7 @@ void __of_update_property_sysfs(struct device_node *np, struct property *newprop
 		return;
 
 	if (oldprop)
-		__of_sysfs_remove_bin_file(np, oldprop);
+		sysfs_remove_bin_file(&np->kobj, &oldprop->attr);
 	__of_add_property_sysfs(np, newprop);
 }
 
@@ -1849,6 +1837,16 @@ static void of_alias_add(struct alias_prop *ap, struct device_node *np,
 		 ap->alias, ap->stem, ap->id, of_node_full_name(np));
 }
 
+#ifdef     CONFIG_LENOVO_ID
+int lenovo_id;
+int  of_get_lenovo_id(void )
+{
+    printk("msm_get_platform_lenovo_id=============base=======of_get_lenovo_id  ---%d",lenovo_id);
+     return lenovo_id;
+}
+EXPORT_SYMBOL(of_get_lenovo_id);
+#endif
+
 /**
  * of_alias_scan - Scan all properties of 'aliases' node
  *
@@ -1871,12 +1869,17 @@ void of_alias_scan(void * (*dt_alloc)(u64 size, u64 align))
 	if (of_chosen) {
 		/* linux,stdout-path and /aliases/stdout are for legacy compatibility */
 		const char *name = of_get_property(of_chosen, "stdout-path", NULL);
+
 		if (!name)
 			name = of_get_property(of_chosen, "linux,stdout-path", NULL);
 		if (IS_ENABLED(CONFIG_PPC) && !name)
 			name = of_get_property(of_aliases, "stdout", NULL);
 		if (name)
 			of_stdout = of_find_node_by_path(name);
+#ifdef CONFIG_LENOVO_ID
+		of_property_read_u32(of_chosen,"lenovoid",&lenovo_id);
+		printk("of_alias_scan-----lenovo_id == ---%d",lenovo_id);
+#endif
 	}
 
 	if (!of_aliases)

@@ -290,6 +290,9 @@ extern struct device_node *of_get_cpu_node(int cpu, unsigned int *thread);
 
 extern int of_n_addr_cells(struct device_node *np);
 extern int of_n_size_cells(struct device_node *np);
+#ifdef CONFIG_LENOVO_ID
+extern int  of_get_lenovo_id(void);
+#endif
 extern const struct of_device_id *of_match_node(
 	const struct of_device_id *matches, const struct device_node *node);
 extern int of_modalias_node(struct device_node *node, char *modalias, int len);
@@ -750,6 +753,16 @@ static inline bool of_property_read_bool(const struct device_node *np,
 					 const char *propname)
 {
 	struct property *prop = of_find_property(np, propname, NULL);
+
+	/*
+	 * Boolean properties have no value cells. The "value" of a boolean
+	 * property is determined by the presence or absence of the property
+	 * itself, and value cells are disregarded entirely. Declaring a
+	 * boolean property with a nonzero number of value cells is a common
+	 * configuration error, since even a boolean property having a value of
+	 * 0 will be treated as "true" by the DT framework.
+	 */
+	WARN_ON(prop && prop->length);
 
 	return prop ? true : false;
 }

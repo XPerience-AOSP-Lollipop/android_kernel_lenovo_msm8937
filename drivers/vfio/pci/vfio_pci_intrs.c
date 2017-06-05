@@ -466,7 +466,7 @@ static int vfio_msi_enable(struct vfio_pci_device *vdev, int nvec, bool msix)
 	if (!is_irq_none(vdev))
 		return -EINVAL;
 
-	vdev->ctx = kcalloc(nvec, sizeof(struct vfio_pci_irq_ctx), GFP_KERNEL);
+	vdev->ctx = kzalloc(nvec * sizeof(struct vfio_pci_irq_ctx), GFP_KERNEL);
 	if (!vdev->ctx)
 		return -ENOMEM;
 
@@ -560,7 +560,7 @@ static int vfio_msi_set_vector_signal(struct vfio_pci_device *vdev,
 		struct msi_msg msg;
 
 		get_cached_msi_msg(irq, &msg);
-		write_msi_msg(irq, &msg);
+		pci_write_msi_msg(irq, &msg);
 	}
 
 	ret = request_irq(irq, vfio_msihandler, 0,

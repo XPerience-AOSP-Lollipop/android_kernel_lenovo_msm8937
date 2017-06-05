@@ -1888,17 +1888,22 @@ struct napi_gro_cb {
 	/* Number of segments aggregated. */
 	u16	count;
 
+	/* This is non-zero if the packet may be of the same flow. */
+	u8	same_flow;
+
+	/* Free the skb? */
+	u8	free;
+#define NAPI_GRO_FREE		  1
+#define NAPI_GRO_FREE_STOLEN_HEAD 2
+
 	/* jiffies when first packet was created/queued */
 	unsigned long age;
 
 	/* Used in ipv6_gro_receive() and foo-over-udp */
 	u16	proto;
 
-	/* This is non-zero if the packet may be of the same flow. */
-	u8	same_flow:1;
-
-	/* Used in tunnel GRO receive */
-	u8	encap_mark:1;
+	/* Used in udp_gro_receive */
+	u8	udp_mark:1;
 
 	/* GRO checksum is valid */
 	u8	csum_valid:1;
@@ -1906,15 +1911,8 @@ struct napi_gro_cb {
 	/* Number of checksums via CHECKSUM_UNNECESSARY */
 	u8	csum_cnt:3;
 
-	/* Free the skb? */
-	u8	free:2;
-#define NAPI_GRO_FREE		  1
-#define NAPI_GRO_FREE_STOLEN_HEAD 2
-
 	/* Used in foo-over-udp, set in udp[46]_gro_receive */
 	u8	is_ipv6:1;
-
-	/* 7 bit hole */
 
 	/* used to support CHECKSUM_COMPLETE for tunneling protocols */
 	__wsum	csum;
@@ -2118,6 +2116,7 @@ void dev_disable_lro(struct net_device *dev);
 int dev_loopback_xmit(struct sk_buff *newskb);
 int dev_queue_xmit(struct sk_buff *skb);
 int dev_queue_xmit_accel(struct sk_buff *skb, void *accel_priv);
+int dev_queue_xmit_list(struct sk_buff *skb);
 int register_netdevice(struct net_device *dev);
 void unregister_netdevice_queue(struct net_device *dev, struct list_head *head);
 void unregister_netdevice_many(struct list_head *head);
@@ -2339,6 +2338,7 @@ struct softnet_data {
 	struct Qdisc		*output_queue;
 	struct Qdisc		**output_queue_tailp;
 	struct list_head	poll_list;
+	struct napi_struct	*current_napi;
 	struct sk_buff		*completion_queue;
 	struct sk_buff_head	process_queue;
 
@@ -2347,6 +2347,7 @@ struct softnet_data {
 	unsigned int		time_squeeze;
 	unsigned int		cpu_collision;
 	unsigned int		received_rps;
+	unsigned int		gro_coalesced;
 
 #ifdef CONFIG_RPS
 	struct softnet_data	*rps_ipi_list;
@@ -2856,6 +2857,7 @@ struct sk_buff *napi_get_frags(struct napi_struct *napi);
 gro_result_t napi_gro_frags(struct napi_struct *napi);
 struct packet_offload *gro_find_receive_by_type(__be16 type);
 struct packet_offload *gro_find_complete_by_type(__be16 type);
+extern struct napi_struct *get_current_napi_context(void);
 
 static inline void napi_free_frags(struct napi_struct *napi)
 {
@@ -2888,6 +2890,10 @@ int dev_get_phys_port_id(struct net_device *dev,
 struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *dev);
 struct sk_buff *dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
 				    struct netdev_queue *txq, int *ret);
+struct sk_buff *dev_hard_start_xmit_list(struct sk_buff *skb,
+				struct net_device *dev,
+				struct netdev_queue *txq,
+				int *ret);
 int __dev_forward_skb(struct net_device *dev, struct sk_buff *skb);
 int dev_forward_skb(struct net_device *dev, struct sk_buff *skb);
 bool is_skb_forwardable(struct net_device *dev, struct sk_buff *skb);

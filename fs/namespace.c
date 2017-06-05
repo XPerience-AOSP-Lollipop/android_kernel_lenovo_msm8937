@@ -1306,7 +1306,7 @@ static void namespace_unlock(void)
 
 	up_write(&namespace_sem);
 
-	synchronize_rcu();
+	synchronize_rcu_expedited();
 
 	while (!hlist_empty(&head)) {
 		mnt = hlist_entry(head.first, struct mount, mnt_hash);
@@ -1494,7 +1494,6 @@ void __detach_mounts(struct dentry *dentry)
 		goto out_unlock;
 
 	lock_mount_hash();
-	event++;
 	while (!hlist_empty(&mp->m_list)) {
 		mnt = hlist_entry(mp->m_list.first, struct mount, mnt_mp_list);
 		umount_tree(mnt, 0);
@@ -2304,12 +2303,14 @@ static bool fs_fully_visible(struct file_system_type *fs_type, int *new_mnt_flag
  * create a new mount for userspace and request it to be added into the
  * namespace's tree
  */
+dev_t fuse_data_dev=0;
 static int do_new_mount(struct path *path, const char *fstype, int flags,
 			int mnt_flags, const char *name, void *data)
 {
 	struct file_system_type *type;
 	struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
 	struct vfsmount *mnt;
+	struct mount *mount_data;
 	int err;
 
 	if (!fstype)
@@ -2332,10 +2333,8 @@ static int do_new_mount(struct path *path, const char *fstype, int flags,
 			mnt_flags |= MNT_NODEV | MNT_LOCK_NODEV;
 		}
 		if (type->fs_flags & FS_USERNS_VISIBLE) {
-			if (!fs_fully_visible(type, &mnt_flags)) {
-				put_filesystem(type);
+			if (!fs_fully_visible(type, &mnt_flags))
 				return -EPERM;
-			}
 		}
 	}
 
@@ -2349,6 +2348,27 @@ static int do_new_mount(struct path *path, const char *fstype, int flags,
 		return PTR_ERR(mnt);
 
 	err = do_add_mount(real_mount(mnt), path, mnt_flags);
+    mount_data = real_mount(mnt);
+	if((mount_data)&&(mount_data->mnt_mountpoint)&&(mount_data->mnt_mountpoint->d_name.name))
+	{
+		if(mnt&&(mnt->mnt_sb)&&(mnt->mnt_sb->s_dev)&&mount_data->mnt_mountpoint->d_name.name)
+		pr_err( "do new mount s_dev %d %s\n ",mnt->mnt_sb->s_dev,mount_data->mnt_mountpoint->d_name.name);
+		if (!memcmp(mount_data->mnt_mountpoint->d_name.name,"emulated",8))
+		{
+			if(mnt&&(mnt->mnt_sb)&&(mnt->mnt_sb->s_type)&&(mnt->mnt_sb->s_type->name))
+			{
+				if((!memcmp(mnt->mnt_sb->s_type->name,"fuse",4))||(!memcmp(mnt->mnt_sb->s_type->name,"sdcardfs",8)))
+				{
+					pr_err( "do new mount  %s %s\n ",mount_data->mnt_mountpoint->d_name.name,mnt->mnt_sb->s_type->name);
+					if(!fuse_data_dev)
+					fuse_data_dev =mnt->mnt_sb->s_dev;
+
+					pr_err( "do new mount %d\n ",fuse_data_dev);
+				}
+				mb();
+			}
+		}
+	}
 	if (err)
 		mntput(mnt);
 	return err;
@@ -3176,7 +3196,7 @@ static bool fs_fully_visible(struct file_system_type *type, int *new_mnt_flags)
 		list_for_each_entry(child, &mnt->mnt_mounts, mnt_child) {
 			struct inode *inode = child->mnt_mountpoint->d_inode;
 			/* Only worry about locked mounts */
-			if (!(child->mnt.mnt_flags & MNT_LOCKED))
+			if (!(mnt->mnt.mnt_flags & MNT_LOCKED))
 				continue;
 			if (!S_ISDIR(inode->i_mode))
 				goto next;

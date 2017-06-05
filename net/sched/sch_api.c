@@ -740,15 +740,14 @@ static u32 qdisc_alloc_handle(struct net_device *dev)
 	return 0;
 }
 
-void qdisc_tree_reduce_backlog(struct Qdisc *sch, unsigned int n,
-			       unsigned int len)
+void qdisc_tree_decrease_qlen(struct Qdisc *sch, unsigned int n)
 {
 	const struct Qdisc_class_ops *cops;
 	unsigned long cl;
 	u32 parentid;
 	int drops;
 
-	if (n == 0 && len == 0)
+	if (n == 0)
 		return;
 	drops = max_t(int, n, 0);
 	while ((parentid = sch->parent)) {
@@ -767,11 +766,10 @@ void qdisc_tree_reduce_backlog(struct Qdisc *sch, unsigned int n,
 			cops->put(sch, cl);
 		}
 		sch->q.qlen -= n;
-		sch->qstats.backlog -= len;
 		__qdisc_qstats_drop(sch, drops);
 	}
 }
-EXPORT_SYMBOL(qdisc_tree_reduce_backlog);
+EXPORT_SYMBOL(qdisc_tree_decrease_qlen);
 
 static void notify_and_destroy(struct net *net, struct sk_buff *skb,
 			       struct nlmsghdr *n, u32 clid,
@@ -1162,6 +1160,45 @@ static int tc_get_qdisc(struct sk_buff *skb, struct nlmsghdr *n)
 	}
 	return 0;
 }
+
+/*
+ * enable/disable flow on qdisc.
+ */
+int
+tc_qdisc_flow_control(struct net_device *dev, u32 tcm_handle, int enable_flow)
+{
+	struct Qdisc *q;
+	int qdisc_len = 0;
+	struct __qdisc_change_req {
+		struct nlattr attr;
+		struct tc_prio_qopt data;
+	} req =	{
+		.attr = {sizeof(struct __qdisc_change_req), TCA_OPTIONS},
+		.data = {3, {1, 2, 2, 2, 1, 2, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1}, 1}
+		};
+
+	/* override flow bit */
+	req.data.enable_flow = enable_flow;
+
+	/* look up using tcm handle */
+	q = qdisc_lookup(dev, tcm_handle);
+
+	/* call registered change function */
+	if (likely(q && q->ops)) {
+		if (likely(q->ops->change)) {
+			qdisc_len = q->q.qlen;
+			if (q->ops->change(q, &req.attr) != 0)
+				pr_err("%s(): qdisc change failed", __func__);
+		} else {
+			WARN_ONCE(1, "%s(): called on queue which does %s",
+				  __func__, "not support change() operation");
+		}
+	} else {
+		WARN_ONCE(1, "%s(): called on bad queue", __func__);
+	}
+	return qdisc_len;
+}
+EXPORT_SYMBOL(tc_qdisc_flow_control);
 
 /*
  * Create/change qdisc.

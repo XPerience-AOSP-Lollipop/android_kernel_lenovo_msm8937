@@ -18,6 +18,15 @@ config SUSPEND_FREEZER
 
 	  Turning OFF this setting is NOT recommended! If in doubt, say Y.
 
+config WAKELOCK
+	bool "Android's method of preventing suspend"
+	default y
+	---help---
+	  This allows applications to prevent the CPU from suspending while
+	  they need it.
+
+	  Say Y if you are running an android userspace.
+
 config HIBERNATE_CALLBACKS
 	bool
 
@@ -309,3 +318,18 @@ config PM_GENERIC_DOMAINS_OF
 config CPU_PM
 	bool
 	depends on SUSPEND || CPU_IDLE
+
+config SUSPEND_TIME
+	bool "Log time spent in suspend"
+	---help---
+	  Prints the time spent in suspend in the kernel log, and
+	  keeps statistics on the time spent in suspend in
+	  /sys/kernel/debug/suspend_time
+config SUSPEND_DEBUG
+	bool "Enable snapshot of regulator and tlmm when suspend"
+	depends on SUSPEND
+	default y
+	help
+	  This allows you to dump the regulator state and tlmm configuration
+	  before suspend. It doesn't work only if you have read the system
+	  file node /sys/privae/tlmm_before_sleep and vreg_before_sleep

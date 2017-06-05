@@ -344,7 +344,7 @@ static void ftrace_syscall_enter(void *data, struct pt_regs *regs, long id)
 	syscall_get_arguments(current, regs, 0, sys_data->nb_args, entry->args);
 
 	event_trigger_unlock_commit(ftrace_file, buffer, event, entry,
-				    irq_flags, pc);
+				    irq_flags, pc, 0);
 }
 
 static void ftrace_syscall_exit(void *data, struct pt_regs *regs, long ret)
@@ -390,7 +390,7 @@ static void ftrace_syscall_exit(void *data, struct pt_regs *regs, long ret)
 	entry->ret = syscall_get_return_value(current, regs);
 
 	event_trigger_unlock_commit(ftrace_file, buffer, event, entry,
-				    irq_flags, pc);
+				    irq_flags, pc, 0);
 }
 
 static int reg_event_syscall_enter(struct ftrace_event_file *file,
@@ -586,7 +586,7 @@ static void perf_syscall_enter(void *ignore, struct pt_regs *regs, long id)
 	size -= sizeof(u32);
 
 	rec = (struct syscall_trace_enter *)perf_trace_buf_prepare(size,
-				sys_data->enter_event->event.type, NULL, &rctx);
+				sys_data->enter_event->event.type, regs, &rctx);
 	if (!rec)
 		return;
 
@@ -659,7 +659,7 @@ static void perf_syscall_exit(void *ignore, struct pt_regs *regs, long ret)
 	size -= sizeof(u32);
 
 	rec = (struct syscall_trace_exit *)perf_trace_buf_prepare(size,
-				sys_data->exit_event->event.type, NULL, &rctx);
+				sys_data->exit_event->event.type, regs, &rctx);
 	if (!rec)
 		return;
 
